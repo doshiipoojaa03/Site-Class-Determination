@@ -1,17 +1,25 @@
 import streamlit as st
+import copy
 from site_class_reference import render_site_class_table
 from backend import calculate_site_class
 from report_generator import generate_site_class_report
 
+st.markdown("""
+    <style>
 
+    .st-emotion-cache-14vh5up{
+                visibility : hidden ;
+            }
+    </style>
+""", unsafe_allow_html=True)
 st.set_page_config(layout="wide")
-st.title("Site Class Determination - IS 1893 : 2025")
+st.title("Site Class Determination - IS 1893 : 2025",anchor=False)
 
 # -------------------------
 # TOP INPUTS
 # -------------------------
 
-col1, col2 = st.columns(2)
+col1, col2  = st.columns(2,vertical_alignment='bottom',gap='large')
 
 with col1:
     depth = st.number_input(
@@ -29,6 +37,7 @@ with col2:
         value=1,
         step=1
     )
+
 
 st.divider()
 
@@ -51,6 +60,10 @@ if len(st.session_state.layers_input) != int(num_layers):
         }
         for _ in range(int(num_layers))
     ]
+
+    st.session_state.pop("calculation_result", None)
+    st.session_state.pop("report_file", None)
+    st.session_state.pop("last_calculated_input", None)
 
 # -------------------------
 # TABLE HEADER
@@ -151,7 +164,11 @@ for i in range(int(num_layers)):
 total_thickness = sum(layer["thickness"] for layer in st.session_state.layers_input)
 valid_depth = total_thickness >= depth
 
+# If inputs become invalid after a previous calculation,
+# automatically clear results
 if not valid_depth:
+    st.session_state.pop("calculation_result", None)
+    st.session_state.pop("report_file", None)
     st.warning("Total thickness must be greater than or equal to Depth of Influence.")
 
 site_data = {
@@ -173,6 +190,8 @@ for i, layer in enumerate(st.session_state.layers_input):
 # BUTTONS (Centered)
 # -------------------------
 
+st.divider()
+
 btn1, btn2, btn3 = st.columns([1,2,1])
 
 with btn2:
@@ -188,14 +207,50 @@ with btn2:
 
         if calculate_clicked:
 
-            result = calculate_site_class(site_data)
+    # Recompute validation at click time (hard sanity check)
+            total_thickness = sum(layer["thickness"] for layer in st.session_state.layers_input)
+            valid_depth_click = total_thickness >= depth
 
-            st.session_state["site_input_data"] = site_data
-            st.session_state["calculation_result"] = result
+            st.session_state["just_calculated"] = True
 
-            # Generate report file once
-            file_path = generate_site_class_report(site_data, result)
-            st.session_state["report_file"] = file_path
+            if not valid_depth_click:
+                st.warning("Total thickness must be greater than or equal to Depth of Influence.")
+                
+                # Clear old results if any
+                st.session_state.pop("calculation_result", None)
+                st.session_state.pop("report_file", None)
+
+            else:
+                result = calculate_site_class(site_data)
+                # print(result)
+
+                st.session_state["site_input_data"] = site_data
+                st.session_state["last_calculated_input"] = copy.deepcopy(site_data)
+                st.session_state["calculation_result"] = result
+
+                for i, layer in enumerate(st.session_state.layers_input):
+                    site_data["layers"].append({
+                        "layer": i + 1,
+                        "thickness": float(layer["thickness"]),
+                        "soil_type": layer["soil_type"],
+                        "fines_less_than_15": layer["fines"],
+                        "n1": int(layer["n_value"]),
+                        "vsi": float(layer["vs_value"])
+                    })
+                # Invalidate previous calculation if inputs changed
+                if "last_calculated_input" in st.session_state:
+
+                    if not st.session_state.get("just_calculated", False):
+                        
+                        if site_data != st.session_state["last_calculated_input"]:
+                            st.session_state.pop("calculation_result", None)
+                            st.session_state.pop("report_file", None)
+                            st.session_state.pop("last_calculated_input", None)
+                        
+                    st.session_state["just_calculated"] = False
+
+                file_path = generate_site_class_report(site_data, result)
+                st.session_state["report_file"] = file_path
     
         # -------- Write Report Button --------
     with colB:
@@ -203,39 +258,51 @@ with btn2:
         if "report_file" in st.session_state:
             with open(st.session_state["report_file"], "rb") as f:
                 st.download_button(
-                    "Write Report",
+                    "Download Report",
                     data=f,
                     file_name="Site_Class_Report.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    type='primary'
                 )
         else:
             st.button(
-                "Write Report",
+                "Download Report",
                 use_container_width=True,
                 disabled=True
             )
 # ---------------- OUTPUT SECTION ----------------
+
 if "calculation_result" in st.session_state:
+    # st.divider()
+    st.markdown("</br>",unsafe_allow_html=True)
+    st.markdown("</br>",unsafe_allow_html=True)
+    with st.container(border=True,key='result_container'):
 
-    result = st.session_state["calculation_result"]
+        result = st.session_state["calculation_result"]
 
-    st.divider()
+        _,col1, _,col2 = st.columns([2,4,2,4])
 
-    col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "Weighted Average Shear Wave Velocity (Vs)",
+                round(result["weighted_vs"], 3)
+            )
 
-    with col1:
-        st.metric(
-            "Weighted Average Shear Wave Velocity (Vs)",
-            round(result["weighted_vs"], 3)
-        )
+        with col2:
+            # with st.container():
+            #     st.markdown(f'Site Class: <p style="font-size:20px;">{result["site_class"]}</p>',unsafe_allow_html=True)
 
-    with col2:
-        st.success(f"Site Class: {result['site_class']}")
+            st.metric(
+                "Site Class",
+                result["site_class"]
+            )
+            # st.success(f"Site Class: {result['site_class']}")
 
-    st.divider()
+        st.divider()
     render_site_class_table()
 
 
+st.markdown("</br></br>",unsafe_allow_html=True)
 
-
+# print(site_data)
